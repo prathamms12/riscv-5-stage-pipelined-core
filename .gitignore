@@ -1,0 +1,9 @@
+*.vvp
+*.vcd
+*.wlf
+*.log
+work/
+xsim.dir/
+.Xil/
+*.jou
+*.pb

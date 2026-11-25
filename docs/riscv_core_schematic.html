@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>riscv_core schematic</title>
+<style>
+:root{--bg:#fff;--fg:#111;--box:#fff;--red:#a52a2a;--blue:#2aa0c8;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#16181c;--fg:#eee;--box:#1e2126;--red:#e0675f;--blue:#4cc3e8;color-scheme:dark}}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:15px system-ui,sans-serif}
+body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+#hint{position:sticky;left:0;padding:10px 16px;font-size:13px;opacity:.6}
+#wrap{overflow:auto;max-width:100%}
+svg{display:block}
+svg text{font:15px system-ui,sans-serif;fill:var(--fg);pointer-events:none}
+svg text.l{font-size:17px}
+.w{transition:opacity .15s}
+.w path.v{fill:none;stroke:var(--c);stroke-width:2;stroke-linejoin:round}
+.w path.h{fill:none;stroke:transparent;stroke-width:12;cursor:pointer}
+.w:hover path.v{stroke-width:3.5}
+.w .a{fill:var(--c)}
+.dim .w{opacity:.1}
+.dim .w.on{opacity:1}
+.dim .w.on path.v{stroke-width:3.5}
+.blk rect{fill:var(--box);stroke:var(--red);stroke-width:2;cursor:pointer}
+.blk.q rect{stroke:var(--blue)}
+.blk:hover rect,.blk.rel rect{stroke-width:3.5}
+.blk.sel rect{stroke-width:5}
+#tip{position:fixed;pointer-events:none;background:#222;color:#fff;font-size:12px;padding:4px 8px;border-radius:4px;display:none;z-index:5}
+</style></head>
+<body>
+<div id="hint">Click a wire or a block to highlight · click empty space or press Esc to clear · Ctrl+scroll to zoom</div>
+<div id="wrap"><svg id="s"></svg></div>
+<div id="tip"></div>
+<script>
+const NS='http://www.w3.org/2000/svg',RH=29,W=170,PAL=['#e0540b','#0d8a9a','#8a5a2b','#2f6fb5','#7a4fa8','#2a9a4a','#c2185b','#6d7f00'];
+// id,label,sequential,col,row,left ports (!=external in),right ports row:name (^=external out)
+const D=[
+['F','u_fetch',0,0,0,'!clk !rst stall flush redir redir_pc !imem_rdata !boot_addr','3:pc 4:instr 7:^imem_addr'],
+['D','u_decode',0,1,0,'!clk !rst instr pc wb_rd wb_data wb_en','0:pc 1:rd 2:rs1d 3:rs2d 4:imm 5:ctrl'],
+['IE','ID/EX',1,2,0,'!clk !rst bubble !mem_stall pc rd rs1d rs2d imm ctrl rs_a','4:pc 5:rd 6:rs1d 7:rs2d 8:imm 9:ctrl 10:rs_a'],
+['X','u_exec',0,3,0,'pc rs1d rs2d imm ctrl fwd_a fwd_b exmem_alu wb_data','0:alu_res 1:pc4 2:redir 3:redir_pc 4:store_d'],
+['XM','EX/MEM',1,4,0,'!clk !rst alu_res pc4 rd ctrl store_d','2:alu_res 3:pc4 4:rd 5:ctrl 6:store_d 7:^dmem_valid 8:^dmem_we'],
+['LM','u_lsu_mem',0,5,0,'addr store_d ctrl','0:^dmem_addr 1:^dmem_wdata 2:^dmem_wstrb'],
+['MW','MEM/WB',1,6,0,'!clk !rst alu_res pc4 rd ctrl','2:alu_res 3:pc4 4:rd 5:ctrl'],
+['LW','u_lsu_wb',0,7,0,'addr ctrl !dmem_rdata','0:load_data'],
+['WB','u_writeback',0,8,0,'alu_res load_data pc4 rd ctrl','0:wb_rd 1:wb_data 2:wb_en'],
+['H','u_hazard',0,3,1,'id_rs idex_rs idex_rd idex_ctrl exmem_rd exmem_ctrl wb_rd wb_en','0:load_use 1:fwd_a 2:fwd_b'],
+['P','u_pipe_ctrl',0,0,1,'!clk !rst load_use redir !mem_stall','0:stall 1:bubble 2:flush']];
+const bm={};
+D.forEach(([id,label,seq,col,row,L,R])=>{const b={id,label,seq,col,row,
+ L:L.split(' ').map((t,i)=>({n:t.replace('!',''),e:t[0]=='!',r:i})),
+ R:R.split(' ').map(t=>{const[r,n]=t.split(':');return{n:n.replace('^',''),e:n[0]=='^',r:+r}})};
+ b.h=18+(Math.max(...b.L.map(p=>p.r),...b.R.map(p=>p.r))+1)*RH+34;bm[id]=b});
+const nets=`F.pc>D.pc
+F.instr>D.instr,IE.rs_a,H.id_rs
+D.pc>IE.pc
+D.rd>IE.rd
+D.rs1d>IE.rs1d
+D.rs2d>IE.rs2d
+D.imm>IE.imm
+D.ctrl>IE.ctrl
+IE.pc>X.pc
+IE.rd>XM.rd,H.idex_rd
+IE.rs1d>X.rs1d
+IE.rs2d>X.rs2d
+IE.imm>X.imm
+IE.ctrl>X.ctrl,XM.ctrl,H.idex_ctrl
+IE.rs_a>H.idex_rs
+X.alu_res>XM.alu_res
+X.pc4>XM.pc4
+X.redir>F.redir,P.redir
+X.redir_pc>F.redir_pc
+X.store_d>XM.store_d
+XM.alu_res>LM.addr,MW.alu_res,X.exmem_alu
+XM.pc4>MW.pc4
+XM.rd>MW.rd,H.exmem_rd
+XM.ctrl>LM.ctrl,MW.ctrl,H.exmem_ctrl
+XM.store_d>LM.store_d
+MW.alu_res>LW.addr,WB.alu_res
+MW.pc4>WB.pc4
+MW.rd>WB.rd
+MW.ctrl>LW.ctrl,WB.ctrl
+LW.load_data>WB.load_data
+WB.wb_rd>D.wb_rd,H.wb_rd
+WB.wb_data>D.wb_data,X.wb_data
+WB.wb_en>D.wb_en,H.wb_en
+H.fwd_a>X.fwd_a
+H.fwd_b>X.fwd_b
+H.load_use>P.load_use
+P.stall>F.stall
+P.bubble>IE.bubble
+P.flush>F.flush`.split('\n').map((s,i)=>{
+ const[a,t]=s.split('>'),[sb,sp]=a.split('.');
+ const n={name:s,sb:bm[sb],sp,c:PAL[i%PAL.length],ly:{},
+  sinks:t.split(',').map(x=>{const[b,p]=x.split('.');return{b:bm[b],p}})};
+ n.tip=n.sb.label+'.'+sp+' → '+n.sinks.map(s=>s.b.label+'.'+s.p).join(', ');
+ return n});
+
+// ---- plan channels and lanes
+const ch={},lanes={top:[],mid:[]};
+const addCh=(g,n)=>{(ch[g]=ch[g]||[]);if(!ch[g].includes(n))ch[g].push(n)};
+nets.forEach(n=>n.sinks.forEach(s=>{
+ s.direct=n.sb.row==s.b.row&&s.b.col==n.sb.col+1;
+ addCh(n.sb.col,n);addCh(s.b.col-1,n);
+ if(!s.direct){
+  s.reg=(n.sb.row||s.b.row)?'mid':'top';
+  let l=lanes[s.reg].find(l=>l.n==n);
+  if(!l)lanes[s.reg].push(l={n,span:0});
+  l.span=Math.max(l.span,Math.abs(s.b.col-n.sb.col));
+ }}));
+const gw={},gx={},cx={};let X=0;
+for(let g=-1;g<=8;g++){gx[g]=X;gw[g]=44+8*(ch[g]?ch[g].length:0);X+=gw[g];if(g<8){cx[g+1]=X;X+=W}}
+const chx=(n,g)=>gx[g]+22+8*ch[g].indexOf(n);
+const maxH=r=>Math.max(...D.filter(d=>d[4]==r).map(d=>bm[d[0]].h));
+const y1=24+8*lanes.top.length+30,r1B=y1+maxH(0),mid0=r1B+30,y2=mid0+8*lanes.mid.length+50;
+lanes.top.sort((a,b)=>b.span-a.span).forEach((l,i)=>l.n.ly.top=24+8*i);
+lanes.mid.sort((a,b)=>b.span-a.span).forEach((l,i)=>l.n.ly.mid=mid0+8*i);
+Object.values(bm).forEach(b=>{b.x=cx[b.col];b.y=b.row?y2:y1});
+const TH=y2+maxH(1)+40;
+
+// ---- draw
+const svg=document.getElementById('s');
+const E=(t,a,p)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);(p||svg).appendChild(e);return e};
+svg.setAttribute('viewBox',`0 0 ${X} ${TH}`);
+let scale=1;const fit=()=>{svg.setAttribute('width',X*scale);svg.setAttribute('height',TH*scale)};fit();
+const py=(b,r)=>b.y+18+r*RH;
+const tri=(x,y,d,c,p)=>E('polygon',{points:`${x},${y-5} ${x+10*d},${y} ${x},${y+5}`,fill:c},p);
+
+nets.forEach(n=>{
+ const g=E('g',{class:'w',style:'--c:'+n.c});g._n=n;n.g=g;
+ const sr=n.sb.R.find(p=>p.n==n.sp).r,sx=n.sb.x+W,sy=py(n.sb,sr),xs=chx(n,n.sb.col);
+ n.sinks.forEach(s=>{
+  const tr=s.b.L.find(p=>p.n==s.p).r,tx=s.b.x,ty=py(s.b,tr),xt=chx(n,s.b.col-1);
+  let pts=[[sx,sy],[xs,sy]];
+  if(!s.direct&&xs!=xt){const ly=n.ly[s.reg];pts.push([xs,ly],[xt,ly],[xt,ty])}
+  else pts.push([xt,ty]);
+  pts.push([tx,ty]);
+  const d='M'+pts.map(p=>p.join(' ')).join(' L');
+  E('path',{class:'h',d},g);E('path',{class:'v',d},g);
+  E('polygon',{class:'a',points:`${tx-10},${ty-5} ${tx},${ty} ${tx-10},${ty+5}`},g);
+ });
+});
+
+Object.values(bm).forEach(b=>{
+ const g=E('g',{class:'blk'+(b.seq?' q':'')});g._b=b;b.g=g;
+ E('rect',{x:b.x,y:b.y,width:W,height:b.h},g);
+ b.L.forEach(p=>{const y=py(b,p.r);if(p.e)tri(b.x+4,y,1,'#2a9a4a',g);
+  const t=E('text',{x:b.x+20,y:y+5},g);t.textContent=p.n});
+ b.R.forEach(p=>{const y=py(b,p.r);if(p.e)tri(b.x+W-4,y,-1,'#d33',g);
+  const t=E('text',{x:b.x+W-(p.e?18:10),y:y+5,'text-anchor':'end'},g);t.textContent=p.n});
+ const t=E('text',{class:'l',x:b.x+W/2,y:b.y+b.h-12,'text-anchor':'middle'},g);t.textContent=b.label;
+});
+
+// ---- interaction
+let cur=null;
+function sel(type,obj){
+ const same=cur&&cur.o===obj;cur=(!type||same)?null:{type,o:obj};
+ const rel=new Set();
+ nets.forEach(n=>{
+  const on=cur&&(cur.type=='n'?n===cur.o:(n.sb===cur.o||n.sinks.some(s=>s.b===cur.o)));
+  n.g.classList.toggle('on',!!on);
+  if(on){rel.add(n.sb);n.sinks.forEach(s=>rel.add(s.b))}});
+ svg.classList.toggle('dim',!!cur);
+ Object.values(bm).forEach(b=>{
+  b.g.classList.toggle('sel',!!cur&&cur.type=='b'&&cur.o===b);
+  b.g.classList.toggle('rel',!!cur&&rel.has(b))});
+}
+svg.addEventListener('click',e=>{
+ const w=e.target.closest('.w'),b=e.target.closest('.blk');
+ if(w)sel('n',w._n);else if(b)sel('b',b._b);else sel(null)});
+document.addEventListener('keydown',e=>{if(e.key=='Escape'){cur=null;sel(null)}});
+const tip=document.getElementById('tip');
+svg.addEventListener('mousemove',e=>{
+ const w=e.target.closest('.w');
+ if(w){tip.textContent=w._n.tip;tip.style.display='block';tip.style.left=e.clientX+14+'px';tip.style.top=e.clientY+14+'px'}
+ else tip.style.display='none'});
+svg.addEventListener('mouseleave',()=>tip.style.display='none');
+document.getElementById('wrap').addEventListener('wheel',e=>{
+ if(!e.ctrlKey)return;e.preventDefault();
+ scale=Math.min(2.5,Math.max(.3,scale*(e.deltaY<0?1.1:.9)));fit()},{passive:false});
+</script>
+</body></html>
